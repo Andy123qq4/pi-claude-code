@@ -1,4 +1,5 @@
 import { createProvider, type AuthContext, type ProviderEnv } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { discoverClaudeModels, getClaudeStatus, LOGIN_HINT, POWERSHELL_ENV } from "./claude-cli.ts";
 import { API_ID, CLAUDE_CODE_MODELS, modelFromDiscovery, PROVIDER_ID } from "./model-catalog.ts";
 import { streamClaudeCode } from "./stream.ts";
@@ -33,6 +34,40 @@ export function claudeCodeEnv(): Record<string, string | undefined> {
 
 export function createClaudeCodeProvider() {
   let discoveredIds: Set<string> | undefined;
+  const checks = new Map<string, { controller: AbortController; promise: ReturnType<typeof getClaudeStatus>; waiters: number }>();
+  async function sharedStatus(env: Record<string, string | undefined>, signal: AbortSignal) {
+    signal.throwIfAborted();
+    // Hash the complete environment: different CLI settings must not share a result.
+    const key = createHash("sha256").update(JSON.stringify(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+    let check = checks.get(key);
+    if (!check) {
+      const controller = new AbortController();
+      const promise = getClaudeStatus(env, controller.signal);
+      check = { controller, promise, waiters: 0 };
+      checks.set(key, check);
+      const current = check;
+      void promise.finally(() => { if (checks.get(key) === current) checks.delete(key); }).catch(() => {});
+    }
+    const current = check;
+    current.waiters++;
+    let abort: (() => void) | undefined;
+    try {
+      return await Promise.race([
+        current.promise,
+        new Promise<never>((_, reject) => {
+          abort = () => reject(signal.reason);
+          signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+        }),
+      ]);
+    } finally {
+      if (abort) signal.removeEventListener("abort", abort);
+      if (--current.waiters === 0 && checks.get(key) === current) {
+        checks.delete(key);
+        current.controller.abort();
+      }
+    }
+  }
   const externalOAuthMarker = () => ({
     type: "oauth" as const,
     access: "claude-code-external",
@@ -52,7 +87,7 @@ export function createClaudeCodeProvider() {
         async check({ ctx, signal }) {
           const providerEnv = await providerEnvironment(ctx);
           lastProviderEnv = providerEnv;
-          const status = await getClaudeStatus(claudeCodeEnv(), signal);
+          const status = await sharedStatus(claudeCodeEnv(), signal);
           // Only report the provider as configured when Claude Code is
           // installed and logged in, so Pi hides its models otherwise.
           if (!status.available || !status.loggedIn) return undefined;

@@ -24,6 +24,9 @@ headers do pass transiently through the local turn relay described below.
 The provider has an ambient API-key-style auth method without a login flow. Its
 `check()` runs `claude auth status` and reports the provider as configured only
 when Claude Code is installed and logged in, so Pi hides the models otherwise.
+Concurrent checks with identical environments share one status process. Each
+caller can cancel independently, and completed results are not cached, so a
+later check can observe a logout.
 Requests resolve to a placeholder key. It reports Claude
 subscription logins as OAuth-shaped auth so that Pi labels list-price accounting
 as a subscription. The provider also declares an `oauth` method, marked
