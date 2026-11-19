@@ -58,9 +58,54 @@ function nativeToolUseId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+// Anthropic requires a tool_result for every tool_use in the next message. A session interrupted
+// between a tool call and its result (restart, crash, abort) leaves the call unanswered, and every
+// later request then fails with 400 "tool_use ids were found without tool_result blocks".
+// pi-ai's transformMessages adds the same synthetic error result; this provider builds its own frames.
+function answerOrphanedToolCalls(messages: Message[]): Message[] {
+  const out: Message[] = [];
+  let pending: Array<{ id: string; name: string }> = [];
+  const answered = new Set<string>();
+  const close = () => {
+    for (const call of pending) {
+      if (answered.has(call.id)) continue;
+      out.push({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: "No result provided" }],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+    pending = [];
+    answered.clear();
+  };
+  for (const message of messages) {
+    if (message.role === "toolResult") {
+      answered.add(message.toolCallId);
+      out.push(message);
+      continue;
+    }
+    if (message.role === "system") {
+      out.push(message);
+      continue;
+    }
+    close();
+    out.push(message);
+    if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") {
+      pending = message.content
+        .filter((block) => block.type === "toolCall")
+        .map((block) => ({ id: block.id, name: block.name }));
+    }
+  }
+  // A trailing call with no result is still running in the current turn; leave it for pi.
+  return out;
+}
+
 export function prepareMessages(messages: Message[], model: Model<any>): Message[] {
   const toolCallIds = new Map<string, string>();
-  return messages.map((message) => {
+  return answerOrphanedToolCalls(messages).map((message) => {
     if (message.role === "toolResult") {
       const id = toolCallIds.get(message.toolCallId);
       return id && id !== message.toolCallId ? { ...message, toolCallId: id } : message;
