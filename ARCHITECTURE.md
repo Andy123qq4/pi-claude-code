@@ -90,6 +90,18 @@ tool execution. In particular, it:
 - ties cancellation to the active upstream socket as well as the Claude Code
   process.
 
+## History preparation
+
+Before it builds frames, the provider applies pi-ai's shared `transformMessages`,
+like pi's own Anthropic provider: a synthetic error result for each tool call
+without a result, no errored or aborted assistant turns, no thinking or
+signatures from other models, tool call ids from other providers normalized to
+Anthropic's pattern, and system messages held until after tool results. Images
+in an error tool result follow the tool results, because Anthropic accepts only
+text there. Pi does not expose `transformMessages` to extensions, so
+`src/vendor/transform-messages.ts` is a pinned copy; a test compares it with the
+installed pi-ai.
+
 ## Tool schemas
 
 Tool schemas are normalized for Claude Code. Nullable variants and schema

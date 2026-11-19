@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { supportsAdaptiveThinking, supportsDisabledThinking } from "./model-catalog.ts";
 import type { NativeContentBlock, NativeFrame, NativeMessage } from "./native-types.ts";
+import { splitErrorToolResultImages, transformMessages } from "./vendor/transform-messages.ts";
 
 export const TOOL_PREFIX = "mcp__pi__";
 export const NATIVE_REPLAY_DIAGNOSTIC = "claude-code.native-assistant.v1";
@@ -54,62 +55,19 @@ function sanitizeSurrogates(text: string): string {
   return text.replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
 }
 
-function nativeToolUseId(id: string): string {
+/** Same rule as pi-ai's Anthropic provider: ids must match ^[a-zA-Z0-9_-]+$ and be at most 64 characters. */
+function normalizeToolCallId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
-// Anthropic requires a tool_result for every tool_use in the next message. A session interrupted
-// between a tool call and its result (restart, crash, abort) leaves the call unanswered, and every
-// later request then fails with 400 "tool_use ids were found without tool_result blocks".
-// pi-ai's transformMessages adds the same synthetic error result; this provider builds its own frames.
-function answerOrphanedToolCalls(messages: Message[]): Message[] {
-  const out: Message[] = [];
-  let pending: Array<{ id: string; name: string }> = [];
-  const answered = new Set<string>();
-  const close = () => {
-    for (const call of pending) {
-      if (answered.has(call.id)) continue;
-      out.push({
-        role: "toolResult",
-        toolCallId: call.id,
-        toolName: call.name,
-        content: [{ type: "text", text: "No result provided" }],
-        isError: true,
-        timestamp: Date.now(),
-      });
-    }
-    pending = [];
-    answered.clear();
-  };
-  for (const message of messages) {
-    if (message.role === "toolResult") {
-      answered.add(message.toolCallId);
-      out.push(message);
-      continue;
-    }
-    if (message.role === "system") {
-      out.push(message);
-      continue;
-    }
-    close();
-    out.push(message);
-    if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") {
-      pending = message.content
-        .filter((block) => block.type === "toolCall")
-        .map((block) => ({ id: block.id, name: block.name }));
-    }
-  }
-  // A trailing call with no result is still running in the current turn; leave it for pi.
-  return out;
-}
-
+/**
+ * Apply pi-ai's shared transcript rules first, as pi's own Anthropic provider does: synthetic
+ * results for unanswered tool calls, no errored or aborted assistant turns, foreign thinking and
+ * signatures dropped, foreign tool call ids normalized, system messages held after tool results.
+ * On top of that, a native replay carrier is only valid for the model that produced it.
+ */
 export function prepareMessages(messages: Message[], model: Model<any>): Message[] {
-  const toolCallIds = new Map<string, string>();
-  return answerOrphanedToolCalls(messages).map((message) => {
-    if (message.role === "toolResult") {
-      const id = toolCallIds.get(message.toolCallId);
-      return id && id !== message.toolCallId ? { ...message, toolCallId: id } : message;
-    }
+  return transformMessages(messages, model, normalizeToolCallId).map((message) => {
     if (
       message.role !== "assistant" ||
       (message.provider === model.provider && message.api === model.api && message.model === model.id)
@@ -119,16 +77,6 @@ export function prepareMessages(messages: Message[], model: Model<any>): Message
     return {
       ...message,
       diagnostics: message.diagnostics?.filter((item) => item.type !== NATIVE_REPLAY_DIAGNOSTIC),
-      content: message.content.flatMap((block): AssistantMessage["content"] => {
-        // Like pi-ai, drop thinking from other models: signatures only validate
-        // for their own model, and replaying it as text reads as visible reply.
-        if (block.type === "thinking") return [];
-        if (block.type === "text") return [{ type: "text", text: block.text }];
-        const id = nativeToolUseId(block.id);
-        toolCallIds.set(block.id, id);
-        const { thoughtSignature, ...toolCall } = block;
-        return [{ ...toolCall, id }];
-      }),
     };
   });
 }
@@ -189,17 +137,17 @@ function userContent(content: string | (TextContent | ImageContent)[]): unknown[
   );
 }
 
-function toolResultContent(message: ToolResultMessage): string | unknown[] {
-  const hasImages = message.content.some((block) => block.type === "image");
+function toolResultContent(content: ToolResultMessage["content"]): string | unknown[] {
+  const hasImages = content.some((block) => block.type === "image");
   if (!hasImages) {
     return sanitizeSurrogates(
-      message.content
+      content
         .filter((block): block is TextContent => block.type === "text")
         .map((block) => block.text)
         .join("\n"),
     );
   }
-  return message.content.map((block) =>
+  return content.map((block) =>
     block.type === "text" ? { type: "text", text: sanitizeSurrogates(block.text) } : imageBlock(block),
   );
 }
@@ -251,9 +199,17 @@ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
 
 export function prepareFrames(messages: Message[]): NativeFrame[] {
   const frames: NativeFrame[] = [];
+  // Anthropic rejects images in an error tool result, and tool results must come first in their
+  // user message: the images follow the last tool result of the run, as in pi-ai (#10794).
+  let errorImages: unknown[] = [];
+  const flushErrorImages = () => {
+    if (errorImages.length) frames.at(-1)!.message.content.push(...errorImages);
+    errorImages = [];
+  };
 
   for (const message of messages) {
     if (message.role === "system") continue;
+    if (message.role !== "toolResult") flushErrorImages();
 
     let role: "user" | "assistant";
     let blocks: unknown[];
@@ -266,14 +222,18 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
       blocks = assistantContent(message);
     } else {
       role = "user";
+      const split = splitErrorToolResultImages(message);
       blocks = [
         {
           type: "tool_result",
           tool_use_id: message.toolCallId,
-          content: toolResultContent(message),
+          content: toolResultContent(split?.content ?? message.content),
           is_error: message.isError,
         },
       ];
+      if (split) {
+        errorImages.push({ type: "text", text: sanitizeSurrogates(split.caption) }, ...split.images.map(imageBlock));
+      }
     }
 
     if (blocks.length === 0) continue;
@@ -284,6 +244,7 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
       frames.push({ type: role, message: { role, content: blocks } });
     }
   }
+  flushErrorImages();
 
   const final = frames.at(-1);
   if (!final || final.type !== "user" || final.message.content.length === 0) {

@@ -380,7 +380,7 @@ test("answers tool calls left without a result when the session was interrupted 
     { role: "user", content: "start", timestamp: 0 },
     assistant,
     { role: "user", content: "continue after restart", timestamp: 2 },
-  ], { provider: "claude-code", api: "test", id: "sonnet" } as Model<any>));
+  ], { provider: "claude-code", api: "test", id: "sonnet", input: ["text", "image"] } as unknown as Model<any>));
   const index = frames.findIndex((f) => f.type === "assistant");
   const next = frames[index + 1];
   assert.equal(next?.type, "user");
@@ -405,7 +405,7 @@ test("does not add a result for a tool call that was answered", () => {
     assistant,
     { role: "toolResult", toolCallId: "done1", toolName: "read", content: [{ type: "text", text: "A" }], isError: false, timestamp: 2 },
     { role: "user", content: "next", timestamp: 3 },
-  ], { provider: "claude-code", api: "test", id: "sonnet" } as Model<any>));
+  ], { provider: "claude-code", api: "test", id: "sonnet", input: ["text", "image"] } as unknown as Model<any>));
   const results = frames.flatMap((f) => f.message.content as Array<{ type: string; tool_use_id?: string }>)
     .filter((b) => b.type === "tool_result");
   assert.deepEqual(results.map((b) => b.tool_use_id), ["done1"]);
