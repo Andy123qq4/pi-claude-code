@@ -801,3 +801,30 @@ test("reports upstream 5xx as retryable and keeps 4xx non-retryable", async () =
   assert.match(invalid.message, /Incomplete Claude Code upstream response \(status 400.*upstream said: bad request/);
   assert.equal(invalid.retryable, false);
 });
+
+test("keeps a tool result whose canonical text looks like Claude Code's image scale note", () => {
+  // Real session (outlook get_email_images): the MCP result already carries "[Image: original ...]" text after
+  // an image. Claude Code passes it through; the aligner must not swallow it as Claude Code's own note.
+  const image = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "big" } };
+  const small = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "small" } };
+  const note = text("[Image: original 2924x1793, displayed at 2000x1226. Multiply coordinates by 1.46 to map to original image.]");
+  const canonicalResult = {
+    type: "tool_result",
+    tool_use_id: "t1",
+    content: [text("subject"), text("image 1"), image, note, text("image 2"), small],
+  };
+  const frames = framesFor([
+    { role: "user", content: [text("look")] },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "get_email_images", input: {} }] },
+    { role: "user", content: [canonicalResult] },
+  ]);
+  const rewritten = rewrite(
+    [
+      { role: "user", content: [text("look")] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "get_email_images", input: {} }] },
+      { role: "user", content: [structuredClone(canonicalResult)] },
+    ],
+    frames,
+  );
+  assert.deepEqual(rewritten[2]?.content, [canonicalResult]);
+});

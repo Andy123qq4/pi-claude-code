@@ -754,7 +754,7 @@ function isImageScaleNote(block: unknown): boolean {
 function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: string): unknown[] {
   const output: unknown[] = [];
   let cursor = 0;
-  for (const block of canonical) {
+  for (const [position, block] of canonical.entries()) {
     if (!isBlock(block)) throw new Error(`Claude Code request has an invalid canonical block in ${where}`);
     const index = wire.findIndex(
       (candidate, position) =>
@@ -769,7 +769,11 @@ function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: str
 
     if (block.type === "image") {
       output.push(withoutCacheControl(native));
-      if (isImageScaleNote(wire[cursor])) output.push(withoutCacheControl(wire[cursor++]));
+      // Claude Code's own scale note follows its downscaled image. A note that Pi's history already has as the
+      // next canonical block came from the tool, not Claude Code: leave it for the next iteration to match.
+      if (isImageScaleNote(wire[cursor]) && !isImageScaleNote(canonical[position + 1])) {
+        output.push(withoutCacheControl(wire[cursor++]));
+      }
     } else if (block.type === "tool_result" && Array.isArray(block.content) && Array.isArray(native.content)) {
       output.push({ ...structuredClone(block), content: alignCanonicalContent(block.content, native.content, where) });
     } else {
