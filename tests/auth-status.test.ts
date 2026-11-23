@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { captureProcess, getClaudeStatus, LOGIN_HINT, runClaudeRequest } from "../src/claude-cli.ts";
 import { createClaudeCodeProvider } from "../src/provider.ts";
+import { writeFakeClaude } from "./fake-claude.ts";
 
 async function withFakeClaude(script: string, run: (command: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "pi-claude-code-auth-"));
-  const executable = join(root, "fake-claude.mjs");
-  await writeFile(executable, `#!${process.execPath}\n${script}\n`);
-  await chmod(executable, 0o755);
+  const executable = await writeFakeClaude(root, `#!${process.execPath}\n${script}\n`);
   try {
     await run(executable);
   } finally {
