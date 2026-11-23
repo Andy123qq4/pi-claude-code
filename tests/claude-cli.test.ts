@@ -318,6 +318,35 @@ test("strips reminder blocks from text-array tool results and keeps Claude Code'
   ]);
 });
 
+test("a user message keeps its first image when Claude Code removed a later one", () => {
+  const image = (data: string): Block => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+  const canonical = [{ role: "user", content: [image("a"), text("between"), image("b")] }];
+  const rewritten = rewrite([{ role: "user", content: [image("a"), text("between")] }], framesFor(canonical));
+  assert.deepEqual(rewritten[0]?.content, [image("a"), text("between")]);
+});
+
+test("a tool result that lost its image without a removal note still fails the request", () => {
+  const image = (data: string): Block => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+  const call: WireMessage = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] };
+  const frames = framesFor([
+    { role: "user", content: [text("look")] },
+    call,
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [text("shot"), image("only")] }] },
+  ]);
+  assert.throws(
+    () =>
+      rewrite(
+        [
+          { role: "user", content: [text("look")] },
+          call,
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [text("shot")] }] },
+        ],
+        frames,
+      ),
+    /lost a image block/,
+  );
+});
+
 test("keeps the right images when Claude Code removes one that is not the first", () => {
   // Inside one tool result Claude Code removed the second image, not the first, and left its note in place.
   const removed = "[media removed: request limit. You have already seen this.]";

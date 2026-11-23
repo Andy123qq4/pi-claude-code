@@ -819,23 +819,33 @@ function countImages(blocks: unknown[]): number {
 }
 
 /**
- * Decide what became of the canonical image at `position` when Claude Code removed some images. A removed image
- * leaves a note at its own place, so the next image-or-note on the wire tells whether this one is still there.
- * Where no note is left (a user message, or the notes are used up), Claude Code removed oldest first: the image is
- * gone when more canonical images remain than wire images. Returns the note's index, "skip", or undefined to match
- * the image normally.
+ * Decide what became of the canonical image at `position` when Claude Code removed some images. Inside a tool
+ * result a removed image leaves a note at its own place, so the next image-or-note on the wire tells whether this
+ * one is still there; without that note the image is not treated as removed, and a missing one still fails the
+ * request. In a user message Claude Code leaves nothing (`silent`), so two signals must agree: oldest-first (more
+ * canonical images remain than wire images) and position (no wire image before the place where the next canonical
+ * non-image block matches). Returns the note's index, "skip", or undefined to match the image normally.
  */
 function removedImageAt(
   canonical: unknown[],
   position: number,
   wire: unknown[],
   cursor: number,
+  silent: boolean,
 ): { note: number } | "skip" | undefined {
   const rest = wire.slice(cursor);
-  const next = rest.findIndex((candidate) => (isBlock(candidate) && candidate.type === "image") || isMediaRemovedNote(candidate));
+  const isImage = (candidate: unknown) => isBlock(candidate) && candidate.type === "image";
+  const next = rest.findIndex((candidate) => isImage(candidate) || isMediaRemovedNote(candidate));
   if (next >= 0 && isMediaRemovedNote(rest[next])) return { note: cursor + next };
-  if (rest.some(isMediaRemovedNote)) return undefined;
-  return next < 0 || countImages(canonical.slice(position)) > countImages(rest) ? "skip" : undefined;
+  if (!silent) return undefined;
+  if (countImages(canonical.slice(position)) <= countImages(rest)) return undefined;
+  const nextImage = rest.findIndex(isImage);
+  if (nextImage < 0) return "skip";
+  const following = canonical.slice(position + 1).find((block) => isBlock(block) && block.type !== "image") as
+    | ContentBlock
+    | undefined;
+  const boundary = following ? rest.findIndex((candidate) => isBlock(candidate) && candidate.type === following.type) : -1;
+  return boundary >= 0 && boundary < nextImage ? "skip" : undefined;
 }
 
 /**
@@ -849,13 +859,14 @@ function removedImageAt(
  * stay removed (sending them back would only hit the same limit), along with
  * the note Claude Code leaves in their place.
  */
-function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: string): unknown[] {
+function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: string, inToolResult = false): unknown[] {
   const output: unknown[] = [];
   let cursor = 0;
   let removedImages = Math.max(0, countImages(canonical) - countImages(wire));
   for (const [position, block] of canonical.entries()) {
     if (!isBlock(block)) throw new Error(`Claude Code request has an invalid canonical block in ${where}`);
-    const removal = block.type === "image" && removedImages > 0 ? removedImageAt(canonical, position, wire, cursor) : undefined;
+    const removal =
+      block.type === "image" && removedImages > 0 ? removedImageAt(canonical, position, wire, cursor, !inToolResult) : undefined;
     if (removal) {
       removedImages -= 1;
       if (removal !== "skip") {
@@ -883,7 +894,7 @@ function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: str
         output.push(withoutCacheControl(wire[cursor++]));
       }
     } else if (block.type === "tool_result" && Array.isArray(block.content) && Array.isArray(native.content)) {
-      output.push({ ...structuredClone(block), content: alignCanonicalContent(block.content, native.content, where) });
+      output.push({ ...structuredClone(block), content: alignCanonicalContent(block.content, native.content, where, true) });
     } else {
       output.push(structuredClone(block));
     }
