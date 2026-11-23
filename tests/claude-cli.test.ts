@@ -344,6 +344,16 @@ test("refuses requests that do not line up with Pi's history", () => {
   );
 });
 
+test("accepts a request from which Claude Code dropped blank user text", () => {
+  // An extension notification, then the empty user message that woke the agent.
+  const frames = prepareFrames([
+    { role: "user", content: [{ type: "text", text: "process exited" }], timestamp: 1 },
+    { role: "user", content: [{ type: "text", text: "" }], timestamp: 1 },
+  ]);
+  const wire = [{ role: "user", content: [text("process exited")] }];
+  assert.deepEqual(rewrite(wire, frames), wire);
+});
+
 test("injects native system history at assistant boundaries", () => {
   const body = {
     system: [
