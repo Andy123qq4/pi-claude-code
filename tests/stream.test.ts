@@ -189,3 +189,77 @@ for await (const line of input) {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("coerces a JSON-string array argument in the streamed partial arguments too", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-claude-code-stream-"));
+  const executable = await writeFakeClaude(
+    root,
+    `#!/usr/bin/env node
+import readline from "node:readline";
+if (process.argv.includes("auth") && process.argv.includes("status")) {
+  console.log(JSON.stringify({loggedIn: true, authMethod: "claude.ai", subscriptionType: "test"}));
+  process.exit(0);
+}
+const input = readline.createInterface({input: process.stdin, crlfDelay: Infinity});
+for await (const line of input) {
+  const frame = JSON.parse(line);
+  if (frame.type === "control_request" && frame.request?.subtype === "initialize") {
+    console.log(JSON.stringify({type: "control_response", response: {subtype: "success", request_id: frame.request_id, response: {models: []}}}));
+    continue;
+  }
+  if (frame.type !== "user") continue;
+  const usage = {input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0};
+  const content = [{type: "text", text: "asking"}, {type: "tool_use", id: "tool_fake", name: "mcp__pi__ask", input: {questions: "[{\\"header\\":\\"h\\"}]"}}];
+  const events = [
+    {type: "message_start", message: {id: "m_fake", role: "assistant", content: [], usage}},
+    {type: "content_block_start", index: 0, content_block: {type: "text", text: ""}},
+    {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "asking"}},
+    {type: "content_block_stop", index: 0},
+    {type: "content_block_start", index: 1, content_block: {type: "tool_use", id: "tool_fake", name: "mcp__pi__ask", input: {}}},
+    {type: "content_block_delta", index: 1, delta: {type: "input_json_delta", partial_json: JSON.stringify({questions: '[{"header":"h"}]'})}},
+    {type: "content_block_stop", index: 1},
+    {type: "message_delta", delta: {stop_reason: "tool_use"}, usage},
+    {type: "message_stop"}
+  ];
+  for (const event of events) {
+    // The text block flushes the delivery buffer; pause before the tool block ends so Pi reads its partial arguments.
+    if (event.type === "content_block_stop" && event.index === 1) await new Promise((resolve) => setTimeout(resolve, 300));
+    console.log(JSON.stringify({type: "stream_event", event}));
+  }
+  console.log(JSON.stringify({type: "assistant", message: {id: "m_fake", role: "assistant", content, stop_reason: "tool_use", usage}}));
+  console.log(JSON.stringify({type: "result", subtype: "error_max_turns", is_error: true, usage}));
+}
+`,
+  );
+
+  try {
+    const model = CLAUDE_CODE_MODELS.find((candidate) => candidate.id === "claude-opus-5-5")!;
+    const stream = streamClaudeCode(
+      model,
+      {
+        messages: [
+          {
+            role: "system",
+            content: "system",
+            toolsAdded: [{ name: "ask", description: "Ask", parameters: { type: "object", properties: { questions: { type: "array" } } } }],
+            timestamp: 0,
+          },
+          { role: "user", content: [{ type: "text", text: "count errors" }], timestamp: 0 },
+        ],
+      } as never,
+      { env: { PI_CLAUDE_CODE_COMMAND: executable }, timeoutMs: 5_000, cacheRetention: "none" } as never,
+    );
+    const partials: unknown[] = [];
+    for await (const event of stream) {
+      if (event.type !== "toolcall_delta") continue;
+      const block = event.partial.content[event.contentIndex];
+      if (block?.type === "toolCall") partials.push(structuredClone(block.arguments));
+    }
+    const message = await stream.result();
+    assert.equal(message.stopReason, "toolUse", message.errorMessage);
+    assert.deepEqual(partials, [{ questions: [{ header: "h" }] }], "streamed partial arguments are coerced");
+  } finally {
+    await closeClaudeProcesses();
+    await rm(root, { recursive: true, force: true });
+  }
+});

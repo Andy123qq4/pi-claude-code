@@ -274,7 +274,11 @@ class EventTranslator {
       block.thinkingSignature = (block.thinkingSignature ?? "") + delta.signature;
     } else if (delta.type === "input_json_delta" && block.type === "toolCall") {
       block.partialJson += delta.partial_json;
-      block.arguments = parseArguments(block.partialJson, block.arguments);
+      // Coerce here too: renderers read the partial arguments while the call streams.
+      block.arguments = coerceStringifiedArguments(
+        parseArguments(block.partialJson, block.arguments),
+        this.schemas.get(block.name),
+      );
       this.stream.push({ type: "toolcall_delta", contentIndex, delta: delta.partial_json, partial: this.output });
     }
   }
