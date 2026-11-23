@@ -318,6 +318,29 @@ test("strips reminder blocks from text-array tool results and keeps Claude Code'
   ]);
 });
 
+test("keeps the right images when Claude Code removes one that is not the first", () => {
+  // Inside one tool result Claude Code removed the second image, not the first, and left its note in place.
+  const removed = "[media removed: request limit. You have already seen this.]";
+  const image = (data: string): Block => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+  const call: WireMessage = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] };
+  const frames = framesFor([
+    { role: "user", content: [text("look")] },
+    call,
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [image("a"), image("b"), image("c")] }] },
+  ]);
+  const rewritten = rewrite(
+    [
+      { role: "user", content: [text("look")] },
+      call,
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [image("a"), text(removed), image("c")] }] },
+    ],
+    frames,
+  );
+  assert.deepEqual(rewritten[2]?.content, [
+    { type: "tool_result", tool_use_id: "t1", content: [image("a"), text(removed), image("c")] },
+  ]);
+});
+
 test("keeps replaying a long session after Claude Code removes its oldest images", () => {
   // Claude Code caps the images in one request. Past the cap it removes the
   // oldest ones itself, so the request no longer holds every image Pi sent.

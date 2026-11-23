@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -797,6 +797,26 @@ function countImages(blocks: unknown[]): number {
 }
 
 /**
+ * Decide what became of the canonical image at `position` when Claude Code removed some images. A removed image
+ * leaves a note at its own place, so the next image-or-note on the wire tells whether this one is still there.
+ * Where no note is left (a user message, or the notes are used up), Claude Code removed oldest first: the image is
+ * gone when more canonical images remain than wire images. Returns the note's index, "skip", or undefined to match
+ * the image normally.
+ */
+function removedImageAt(
+  canonical: unknown[],
+  position: number,
+  wire: unknown[],
+  cursor: number,
+): { note: number } | "skip" | undefined {
+  const rest = wire.slice(cursor);
+  const next = rest.findIndex((candidate) => (isBlock(candidate) && candidate.type === "image") || isMediaRemovedNote(candidate));
+  if (next >= 0 && isMediaRemovedNote(rest[next])) return { note: cursor + next };
+  if (rest.some(isMediaRemovedNote)) return undefined;
+  return next < 0 || countImages(canonical.slice(position)) > countImages(rest) ? "skip" : undefined;
+}
+
+/**
  * Rebuild native user content from Pi's canonical blocks. Claude Code adds
  * reminders (auto-memory, account context, attachments) to user messages and
  * appends them to tool-result text; none of that is Pi history. Canonical
@@ -813,12 +833,12 @@ function alignCanonicalContent(canonical: unknown[], wire: unknown[], where: str
   let removedImages = Math.max(0, countImages(canonical) - countImages(wire));
   for (const [position, block] of canonical.entries()) {
     if (!isBlock(block)) throw new Error(`Claude Code request has an invalid canonical block in ${where}`);
-    if (block.type === "image" && removedImages > 0) {
+    const removal = block.type === "image" && removedImages > 0 ? removedImageAt(canonical, position, wire, cursor) : undefined;
+    if (removal) {
       removedImages -= 1;
-      const note = wire.findIndex((candidate, position) => position >= cursor && isMediaRemovedNote(candidate));
-      if (note >= 0) {
-        output.push(withoutCacheControl(wire[note]));
-        cursor = note + 1;
+      if (removal !== "skip") {
+        output.push(withoutCacheControl(wire[removal.note]));
+        cursor = removal.note + 1;
       }
       continue;
     }
