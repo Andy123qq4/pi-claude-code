@@ -15,6 +15,7 @@ import {
 } from "../src/claude-cli.ts";
 import type { NativeFrame } from "../src/native-types.ts";
 import { createClaudeCodeProvider } from "../src/provider.ts";
+import { writeFakeClaude } from "./fake-claude.ts";
 
 type Block = Record<string, unknown>;
 type WireMessage = { role: string; content: unknown };
@@ -697,9 +698,8 @@ async function failingUpstreamTurn(
   }
 
   const root = await realpath(await mkdtemp(join(tmpdir(), "pi-claude-code-upstream-")));
-  const executable = join(root, "fake-claude.mjs");
-  await writeFile(
-    executable,
+  const executable = await writeFakeClaude(
+    root,
     `#!/usr/bin/env node
 import readline from "node:readline";
 if (process.argv.includes("auth") && process.argv.includes("status")) {
@@ -722,9 +722,7 @@ for await (const line of input) {
   console.log(JSON.stringify({type: "result", subtype: "error_during_execution", is_error: true}));
 }
 `,
-    "utf8",
   );
-  await chmod(executable, 0o755);
 
   try {
     const error = await runClaudeRequest({
@@ -841,9 +839,8 @@ test("routes the relay to PI_CLAUDE_CODE_UPSTREAM_URL and forwards Pi metadata h
   const port = (server.address() as { port: number }).port;
 
   const root = await realpath(await mkdtemp(join(tmpdir(), "pi-claude-code-upstream-env-")));
-  const executable = join(root, "fake-claude.mjs");
-  await writeFile(
-    executable,
+  const command = await writeFakeClaude(
+    root,
     `#!/usr/bin/env node
 import readline from "node:readline";
 if (process.argv.includes("auth") && process.argv.includes("status")) {
@@ -865,16 +862,7 @@ for await (const line of input) {
   console.log(JSON.stringify({type: "result", subtype: "error_during_execution", is_error: true}));
 }
 `,
-    "utf8",
   );
-  await chmod(executable, 0o755);
-  // Windows cannot spawn a .mjs file directly; run it through a .cmd shim there.
-  const command =
-    process.platform === "win32"
-      ? await writeFile(join(root, "fake-claude.cmd"), `@"${process.execPath}" "${executable}" %*\r\n`, "utf8").then(() =>
-          join(root, "fake-claude.cmd"),
-        )
-      : executable;
 
   try {
     await runClaudeRequest({
