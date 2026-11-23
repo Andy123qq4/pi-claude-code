@@ -844,7 +844,16 @@ function removedImageAt(
   const following = canonical.slice(position + 1).find((block) => isBlock(block) && block.type !== "image") as
     | ContentBlock
     | undefined;
-  const boundary = following ? rest.findIndex((candidate) => isBlock(candidate) && candidate.type === following.type) : -1;
+  // Match the canonical block itself, not just its type: Claude Code puts reminder text blocks in user messages.
+  const boundary = following
+    ? rest.findIndex(
+        (candidate) =>
+          isBlock(candidate) &&
+          candidate.type === following.type &&
+          (following.type !== "text" || candidate.text === following.text) &&
+          (following.type !== "tool_result" || candidate.tool_use_id === following.tool_use_id),
+      )
+    : -1;
   return boundary >= 0 && boundary < nextImage ? "skip" : undefined;
 }
 

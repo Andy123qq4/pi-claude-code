@@ -325,6 +325,13 @@ test("a user message keeps its first image when Claude Code removed a later one"
   assert.deepEqual(rewritten[0]?.content, [image("a"), text("between")]);
 });
 
+test("a reminder Claude Code put before the images does not count as the next canonical text", () => {
+  const image = (data: string): Block => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
+  const canonical = [{ role: "user", content: [image("a"), text("between"), image("b")] }];
+  const rewritten = rewrite([{ role: "user", content: [text(memory), image("a"), text("between")] }], framesFor(canonical));
+  assert.deepEqual(rewritten[0]?.content, [image("a"), text("between")]);
+});
+
 test("a tool result that lost its image without a removal note still fails the request", () => {
   const image = (data: string): Block => ({ type: "image", source: { type: "base64", media_type: "image/png", data } });
   const call: WireMessage = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] };
