@@ -214,6 +214,28 @@ test("drops a repeated date reminder without captured system messages", () => {
   );
 });
 
+test("keeps a repeated system message that carries a per-message effort change", () => {
+  const canonical = [
+    { role: "user", content: [text("inspect")] },
+    { role: "assistant", content: [text("first")] },
+    { role: "user", content: [text("think harder")] },
+  ];
+  const effortUpdate = { role: "system", content: "Today's date is 2026-11-08.", output_config: { effort: "high" } };
+  const wire = [
+    canonical[0]!,
+    { role: "system", content: "environment reminder\nToday's date is 2026-11-08.", output_config: { effort: "medium" } },
+    canonical[1]!,
+    effortUpdate,
+    canonical[2]!,
+  ];
+  const rewritten = rewrite(wire, framesFor(canonical));
+  assert.deepEqual(
+    rewritten.map((message) => message.role),
+    ["user", "system", "assistant", "system", "user"],
+  );
+  assert.deepEqual((rewritten[3] as { output_config?: unknown }).output_config, { effort: "high" });
+});
+
 test("strips reminders when the first user message carries none (issue #27)", () => {
   const canonical = [
     { role: "user", content: [text("inspect")] },

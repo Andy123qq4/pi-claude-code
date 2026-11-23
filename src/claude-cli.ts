@@ -886,6 +886,8 @@ function normalizeLeadingSystemCache(system: unknown): void {
  * but a warm process does not have it at that position. Kept anywhere past the
  * leading block, the copy changes the request prefix between turns and the
  * prompt cache misses. The leading environment message already carries it.
+ * A message with `output_config` is kept even when its text repeats: it carries
+ * a per-message effort change, not only a reminder.
  */
 function withoutRepeatedSystemMessages(messages: NativeRequestMessage[]): NativeRequestMessage[] {
   let leadingEnd = 1;
@@ -896,6 +898,7 @@ function withoutRepeatedSystemMessages(messages: NativeRequestMessage[]): Native
     .join("\n");
   return messages.filter((message, index) => {
     if (index < leadingEnd || message.role !== "system") return true;
+    if (message.output_config !== undefined) return true;
     const text = contentText(message.content);
     return !text || !leadingText.includes(text);
   });
