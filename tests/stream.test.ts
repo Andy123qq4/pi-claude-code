@@ -70,9 +70,8 @@ for await (const line of input) {
 
 test("passes the output budget to Claude Code, defaulting to the model's maxTokens", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-claude-code-stream-"));
-  const executable = join(root, "fake-claude.mjs");
-  await writeFile(
-    executable,
+  const executable = await writeFakeClaude(
+    root,
     `#!/usr/bin/env node
 import readline from "node:readline";
 if (process.argv.includes("auth") && process.argv.includes("status")) {
@@ -103,9 +102,7 @@ for await (const line of input) {
   console.log(JSON.stringify({type: "result", subtype: "success", is_error: false, usage, uuid: frame.uuid}));
 }
 `,
-    "utf8",
   );
-  await chmod(executable, 0o755);
 
   const budgetSeen = async (maxTokens: number | undefined): Promise<string> => {
     const model = CLAUDE_CODE_MODELS.find((candidate) => candidate.id === "claude-opus-5-5")!;
