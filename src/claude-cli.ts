@@ -1416,11 +1416,19 @@ export class IncompleteClaudeResponse extends Error {
   }
 }
 
+/**
+ * Anthropic error types that a retry cannot fix. Reported as an error event inside a 200 stream they carry no
+ * 4xx status, so they are recognised by type.
+ */
+const PERMANENT_UPSTREAM_ERROR =
+  /^(?:invalid_request_error|authentication_error|permission_error|not_found_error|request_too_large|billing_error)\b/u;
+
 /** Attempts allowed per failure class: 429 gets one retry; overloaded, 5xx and stream cuts get two; other 4xx none. */
 function maxAttemptsFor(error: IncompleteClaudeResponse): number {
   const status = error.status;
   if (status === 429 || /rate_limit_error/u.test(error.upstreamError ?? "")) return 2;
   if (status !== undefined && status >= 400 && status < 500 && status !== 408) return 1;
+  if (PERMANENT_UPSTREAM_ERROR.test(error.upstreamError ?? "")) return 1;
   return 3;
 }
 

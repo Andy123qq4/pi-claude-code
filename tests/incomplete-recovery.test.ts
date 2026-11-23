@@ -266,6 +266,35 @@ test("529 overloaded gets three attempts; a 400 none", async () => {
   } finally { await overloaded.close(); await invalid.close(); await closeClaudeProcesses(); await rm(t.root, { recursive: true, force: true }); }
 });
 
+async function fakeStreamError(type: string, message: string) {
+  let hits = 0;
+  const server = createServer((request, response) => {
+    hits += 1;
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const usage = { input_tokens: 2, output_tokens: 0 };
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "m1", role: "assistant", content: [], usage } })}\n\n`);
+      response.end(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message } })}\n\n`);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  return { url: `http://127.0.0.1:${port}`, hits: () => hits, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test("an error event in a 200 stream: overloaded gets three attempts, invalid_request_error one", async () => {
+  const t = await setup("relay");
+  const overloaded = await fakeStreamError("overloaded_error", "Overloaded");
+  const invalid = await fakeStreamError("invalid_request_error", "bad request");
+  try {
+    await assert.rejects(runClaudeRequest({ ...t.input(), upstreamUrl: overloaded.url }), /status 200.*overloaded_error/);
+    assert.equal(overloaded.hits(), 3);
+    await assert.rejects(runClaudeRequest({ ...t.input(), upstreamUrl: invalid.url }), /status 200.*invalid_request_error: bad request/);
+    assert.equal(invalid.hits(), 1, "a permanent error in a 200 stream is not retried");
+  } finally { await overloaded.close(); await invalid.close(); await closeClaudeProcesses(); await rm(t.root, { recursive: true, force: true }); }
+});
+
 test("relay failure (unreachable upstream, AggregateError) is torn down and retried, not left cached", async () => {
   const t = await setup("relay");
   try {
