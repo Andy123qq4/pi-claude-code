@@ -635,6 +635,12 @@ function processEnvironment(
     CLAUDE_CODE_MAX_RETRIES: "0",
     DISABLE_AUTO_COMPACT: "1",
     DISABLE_COMPACT: "1",
+    // Claude Code refuses a prompt locally ("Prompt is too long", terminal_reason
+    // blocking_limit) when its rough estimate of the raw transcript (about 3
+    // chars per token) nears the model window, before any request is sent. Pi
+    // owns compaction and a proxy behind the relay may shrink the body, so the
+    // upstream decides; its real overflow error still maps to context_length_exceeded.
+    CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE: "1000000000",
     CLAUDE_CODE_TOTAL_TOKENS_REMINDER: "off",
     DISABLE_ERROR_REPORTING: "1",
   });
