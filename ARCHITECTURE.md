@@ -111,6 +111,14 @@ extensions in `before_provider_headers`) so such a gateway can match a request
 to its Pi session. Pi's provider headers can carry credentials, so no other Pi
 header is added, and a header Claude Code sent is never replaced.
 
+Workers set `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` to a limit no transcript
+reaches. Without it, Claude Code estimates the raw replayed transcript at about
+3 characters per token and, near the model window, answers "Prompt is too long"
+(`terminal_reason: blocking_limit`) without sending a request. A gateway may
+shrink that body well below the window, and Pi owns compaction, so the upstream
+judges prompt size; a real overflow from Anthropic still reaches Pi as
+`context_length_exceeded`.
+
 ## History preparation
 
 Before it builds frames, the provider applies pi-ai's shared `transformMessages`,
